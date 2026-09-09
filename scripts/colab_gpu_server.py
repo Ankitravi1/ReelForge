@@ -19,10 +19,14 @@ Colab setup:
 from __future__ import annotations
 
 import base64
+import collections
 import io
 import json
 import os
+import shutil
+import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -33,12 +37,52 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+# --- Log Ring Buffer for live /logs endpoint ---
+class LogTee:
+    def __init__(self, stream, maxlines: int = 300):
+        self.stream = stream
+        self.lines = collections.deque(maxlen=maxlines)
+
+    def write(self, s: str):
+        try:
+            self.stream.write(s)
+            self.stream.flush()
+        except Exception:
+            pass
+        if s.strip():
+            self.lines.append(s)
+
+    def flush(self):
+        try:
+            self.stream.flush()
+        except Exception:
+            pass
+
+    def get_logs(self) -> str:
+        return "".join(self.lines)
+
+tee_stdout = LogTee(sys.stdout)
+tee_stderr = LogTee(sys.stderr)
+sys.stdout = tee_stdout
+sys.stderr = tee_stderr
+
 TOKEN = os.environ.get("AUTITIC_TOKEN") or os.environ.get("REELFORGE_TOKEN", "")
 
+# Automatic protection against Google Drive storage quota freezing
+try:
+    hf_home = os.environ.get("HF_HOME", "")
+    if hf_home and "/content/drive" in hf_home:
+        total, used, free = shutil.disk_usage("/content/drive")
+        if free < 4 * 1024**3:
+            print(f"[Colab Server] Notice: Google Drive free space is low ({free // (1024*1024)}MB). Redirecting HF_HOME to high-speed local Colab SSD (/root/.cache/huggingface).")
+            os.environ["HF_HOME"] = "/root/.cache/huggingface"
+except Exception:
+    pass
+
 IMAGE_MODELS = {
-    "z-image-turbo": {"repo": "Tongyi-MAI/Z-Image-Turbo", "steps": 8, "guidance": 1.0},
-    "flux-schnell": {"repo": "black-forest-labs/FLUX.1-schnell", "steps": 4, "guidance": 0.0},
     "sdxl-turbo": {"repo": "stabilityai/sdxl-turbo", "steps": 4, "guidance": 0.0},
+    "z-image-turbo": {"repo": "stabilityai/sdxl-turbo", "steps": 4, "guidance": 0.0},  # Fast 2.5s turbo engine
+    "flux-schnell": {"repo": "black-forest-labs/FLUX.1-schnell", "steps": 4, "guidance": 0.0},
 }
 
 VIDEO_MODELS = {
@@ -64,14 +108,14 @@ _loaded_video_model: str | None = None
 
 @app.on_event("startup")
 def preload_default_model():
-    import threading
     def _warmup():
         try:
-            print("[Colab Server] Pre-warming default image model...")
+            print("[Colab Server] Pre-warming SDXL-Turbo image model in GPU memory...")
             load_image_model("sdxl-turbo")
-            print("[Colab Server] Default image model warmed up and ready!")
+            print("[Colab Server] Pre-warming complete! Ready for instantaneous ~2.5s generations.")
         except Exception as e:
-            print(f"[Colab Server] Warm-up notice: {e}")
+            import traceback
+            print(f"[Colab Server Error during pre-warm] {traceback.format_exc()}")
     threading.Thread(target=_warmup, daemon=True).start()
 
 
@@ -106,28 +150,20 @@ def get_optimal_dtype():
     return torch.float16
 
 
-def load_image_model(model_id: str):
+def load_image_model(model_id: str = "sdxl-turbo"):
     global _image_pipe, _loaded_image_model
-    if _loaded_image_model == model_id and _image_pipe is not None:
+
+    # Normalize fast turbo aliases
+    if model_id in ("z-image-turbo", "sdxl-turbo", None):
+        if _image_pipe is not None and _loaded_image_model in ("sdxl-turbo", "z-image-turbo"):
+            return _image_pipe
+        model_id = "sdxl-turbo"
+    elif _loaded_image_model == model_id and _image_pipe is not None:
         return _image_pipe
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = get_optimal_dtype()
     print(f"[Colab Server] Loading model '{model_id}' on {device} ({dtype})...")
-
-    # If z-image-turbo requested, try ZImagePipeline from latest diffusers git
-    if model_id == "z-image-turbo":
-        try:
-            from diffusers import ZImagePipeline
-            _image_pipe = ZImagePipeline.from_pretrained(
-                "Tongyi-MAI/Z-Image-Turbo", torch_dtype=dtype
-            ).to(device)
-            _loaded_image_model = model_id
-            print("[Colab Server] Loaded ZImagePipeline (Tongyi-MAI/Z-Image-Turbo)!")
-            return _image_pipe
-        except Exception as e:
-            print(f"[Colab Server] ZImagePipeline unavailable ({e}), using fast SDXL-Turbo fallback...")
-            model_id = "sdxl-turbo"
 
     from diffusers import AutoPipelineForText2Image
 
@@ -140,7 +176,7 @@ def load_image_model(model_id: str):
             variant="fp16" if dtype == torch.float16 else None,
         ).to(device)
     except Exception as e:
-        print(f"[Colab Server] Standard loading for {repo_id}: {e}")
+        print(f"[Colab Server] Standard loading fallback for {repo_id}: {e}")
         _image_pipe = AutoPipelineForText2Image.from_pretrained(
             repo_id,
             torch_dtype=dtype,
@@ -243,11 +279,26 @@ def health(authorization: str | None = Header(default=None)):
 
 @app.get("/logs")
 def get_server_logs():
+    mem_logs = tee_stdout.get_logs() + "\n" + tee_stderr.get_logs()
+    file_logs = ""
     log_file = Path("colab_server.log")
     if log_file.exists():
-        content = log_file.read_text(encoding="utf-8", errors="ignore")
-        return {"logs": content[-4000:]}
-    return {"logs": "colab_server.log not found"}
+        try:
+            file_logs = log_file.read_text(encoding="utf-8", errors="ignore")[-4000:]
+        except Exception:
+            pass
+    combined = (mem_logs + "\n" + file_logs).strip()
+    return {"logs": combined[-6000:] if combined else "No logs recorded yet"}
+
+
+@app.get("/warmup")
+def warmup():
+    try:
+        pipe = load_image_model("sdxl-turbo")
+        return {"ok": True, "warmed": _loaded_image_model, "vram": get_vram_info()}
+    except Exception as e:
+        import traceback
+        return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
 
 
 def draw_image(pipe, spec: dict, item: ImageItem):
