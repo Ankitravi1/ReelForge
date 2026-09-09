@@ -37,34 +37,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-# --- Log Ring Buffer for live /logs endpoint ---
-class LogTee:
-    def __init__(self, stream, maxlines: int = 300):
-        self.stream = stream
-        self.lines = collections.deque(maxlen=maxlines)
-
-    def write(self, s: str):
-        try:
-            self.stream.write(s)
-            self.stream.flush()
-        except Exception:
-            pass
-        if s.strip():
-            self.lines.append(s)
-
-    def flush(self):
-        try:
-            self.stream.flush()
-        except Exception:
-            pass
-
-    def get_logs(self) -> str:
-        return "".join(self.lines)
-
-tee_stdout = LogTee(sys.stdout)
-tee_stderr = LogTee(sys.stderr)
-sys.stdout = tee_stdout
-sys.stderr = tee_stderr
 
 TOKEN = os.environ.get("AUTITIC_TOKEN") or os.environ.get("REELFORGE_TOKEN", "")
 
@@ -279,16 +251,13 @@ def health(authorization: str | None = Header(default=None)):
 
 @app.get("/logs")
 def get_server_logs():
-    mem_logs = tee_stdout.get_logs() + "\n" + tee_stderr.get_logs()
-    file_logs = ""
     log_file = Path("colab_server.log")
     if log_file.exists():
         try:
-            file_logs = log_file.read_text(encoding="utf-8", errors="ignore")[-4000:]
-        except Exception:
-            pass
-    combined = (mem_logs + "\n" + file_logs).strip()
-    return {"logs": combined[-6000:] if combined else "No logs recorded yet"}
+            return {"logs": log_file.read_text(encoding="utf-8", errors="ignore")[-8000:]}
+        except Exception as e:
+            return {"logs": f"Error reading logs: {e}"}
+    return {"logs": "colab_server.log not found"}
 
 
 @app.get("/warmup")
