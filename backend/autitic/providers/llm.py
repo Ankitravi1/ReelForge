@@ -528,3 +528,132 @@ def fallback_script_generator(story: Dict[str, Any]) -> Dict[str, Any]:
         "estimated_duration_s": round(total_w / 2.5, 1),
     }
 
+
+# ---------------------------------------------------------------------------
+# Tier 3: AI Visual Director (Visual Prompt & Camera Motion Synthesizer)
+# Inspired by Stickman Video Director, Video-Use & Remotion
+# ---------------------------------------------------------------------------
+VISUAL_DIRECTOR_SYSTEM_PROMPT = """You are an elite Hollywood & Animation Director and Visual Storyboard Artist.
+Your task is to transform spoken story narration cuts into production-ready VISUAL IMAGE PROMPTS and CAMERA MOTION DIRECTIONS.
+
+CRITICAL DIRECTING RULES:
+1. "A script is not yet a video": Spoken words cannot be rendered directly into an image generator. Invent a visual metaphor, physical staging, and specific character actions that illustrate the spoken thought.
+2. Character Consistency Lock: Maintain the exact same character appearance, attire, colors, and features across every shot so they form a continuous movie.
+3. Framing & Composition: Specify camera shots (wide establishing, dynamic medium action, dramatic low-angle, intense close-up).
+4. Camera Motion: Assign dynamic motion tags (e.g., "slow pan right", "cinematic slow zoom-in", "gentle tilt up", "dynamic push-in", "static atmospheric breathe").
+"""
+
+async def generate_visual_prompts_for_shots(
+    story: Dict[str, Any],
+    shots: List[Dict[str, Any]],
+    style_prefix: str = "cinematic detailed fable art, vibrant atmosphere, masterwork",
+    aspect_ratio: str = "9:16",
+    api_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Synthesizes rich visual image prompts and camera motions for each cut in the timeline."""
+    title = story.get("title", "Untitled Story")
+    logline = story.get("logline", "")
+    setting = story.get("setting", "Natural atmospheric environment")
+    characters = story.get("characters", ["Main protagonist"])
+    char_str = ", ".join(characters) if isinstance(characters, list) else str(characters)
+
+    # Format user prompt
+    shots_summary = "\n".join(
+        [f"Shot #{s['index']} (Duration: {s.get('duration', 3.0)}s): \"{s.get('text', '')}\"" for s in shots]
+    )
+
+    prompt_user = (
+        f"Story Title: {title}\n"
+        f"Logline: {logline}\n"
+        f"Setting: {setting}\n"
+        f"Main Characters: {char_str}\n"
+        f"Visual Style: {style_prefix}\n"
+        f"Aspect Ratio: {aspect_ratio}\n\n"
+        f"Narration Cuts to Direct:\n{shots_summary}"
+    )
+
+    schema = """{
+      "directed_shots": [
+        {
+          "index": 1,
+          "visual_prompt": "Detailed description of scene, characters, props, lighting, composition",
+          "camera_motion": "slow zoom in / pan left / etc.",
+          "shot_type": "wide / medium / close-up"
+        }
+      ]
+    }"""
+
+    res = await llm_service.complete_chat(
+        messages=[
+            {"role": "system", "content": VISUAL_DIRECTOR_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt_user},
+        ],
+        json_schema_prompt=schema,
+        explicit_key=api_key,
+    )
+
+    directed_map = {}
+    if res and "directed_shots" in res and isinstance(res["directed_shots"], list):
+        for item in res["directed_shots"]:
+            if isinstance(item, dict) and "index" in item:
+                directed_map[item["index"]] = item
+
+    # Build final result array with smart fallbacks
+    motion_cycle = [
+        "slow cinematic push-in",
+        "gentle pan left to right",
+        "subtle zoom-out revealing environment",
+        "slow tilt up towards canopy",
+        "dynamic tracking follow",
+        "slow camera zoom-in on subject",
+        "gentle pan right",
+        "dramatic low-angle push",
+        "atmospheric static breathe",
+        "slow pull back to wide finish",
+    ]
+
+    framing_cycle = ["wide establishing shot", "medium action shot", "close-up detail", "medium dynamic shot", "wide cinematic view"]
+
+    results = []
+    for s in shots:
+        idx = s["index"]
+        text = s.get("text", "").strip()
+        existing_dir = directed_map.get(idx, {})
+
+        if existing_dir.get("visual_prompt"):
+            v_prompt = existing_dir["visual_prompt"]
+            c_motion = existing_dir.get("camera_motion", motion_cycle[(idx - 1) % len(motion_cycle)])
+            s_type = existing_dir.get("shot_type", framing_cycle[(idx - 1) % len(framing_cycle)])
+        else:
+            # Smart contextual fallback synthesis
+            framing = framing_cycle[(idx - 1) % len(framing_cycle)]
+            c_motion = motion_cycle[(idx - 1) % len(motion_cycle)]
+            s_type = framing
+
+            # Build narrative context
+            if idx == 1:
+                v_prompt = f"{framing} of {char_str} in {setting}, beginning the journey, atmospheric cinematic lighting"
+            elif idx == len(shots):
+                v_prompt = f"{framing} of {char_str} reaching the triumphant climax and resolution in {setting}, beautiful lighting, cinematic closure"
+            elif any(w in text.lower() for w in ["monkey", "monkeys", "animal", "creature"]):
+                v_prompt = f"{framing} featuring playful mischievous monkeys in the tree branches, interacting with hats, vibrant jungle setting, expressive faces"
+            elif any(w in text.lower() for w in ["angry", "yell", "shout", "frustrated"]):
+                v_prompt = f"Dramatic expressive {framing} of the hat seller gesturing passionately, emotional reaction, rich colors, dramatic lighting"
+            elif any(w in text.lower() for w in ["sleep", "rest", "wake", "lay"]):
+                v_prompt = f"Peaceful atmospheric {framing} of the traveler resting under the grand banyan tree, dappled shadows and warm sunlight"
+            elif any(w in text.lower() for w in ["throw", "slam", "ground", "hurl"]):
+                v_prompt = f"Dynamic action {framing} of colorful caps raining down through the sunlit air, monkeys and merchant, lively cinematic moment"
+            else:
+                cleaned_text = re.sub(r'[^a-zA-Z0-9\s,]', '', text)
+                v_prompt = f"{framing} of {char_str} in {setting}, illustrating: {cleaned_text}, character consistency, cinematic lighting"
+
+        results.append({
+            "index": idx,
+            "visual_prompt": v_prompt,
+            "camera_motion": c_motion,
+            "shot_type": s_type,
+            "narration": text,
+        })
+
+    return results
+

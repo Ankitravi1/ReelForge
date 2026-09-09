@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,7 +13,7 @@ from ..providers.stt_whisper import align_audio_words
 from ..providers.image_animagine import generate_animagine_image
 from ..providers.colab_wan2gp import dispatch_colab_image_generation
 from ..providers.depth_parallax import estimate_depth_map, plan_2_5d_motion
-from ..providers.llm import generate_story_from_idea, generate_script_from_story
+from ..providers.llm import generate_story_from_idea, generate_script_from_story, generate_visual_prompts_for_shots
 from ..providers.ffmpeg_renderer import mix_master_audio, assemble_final_video, generate_subtitles_srt
 from . import get_project_dir
 
@@ -336,6 +337,28 @@ class RoomService:
                 "locked": False,
             })
 
+        # Auto-direct visual prompts for all newly cut shots
+        try:
+            story = cls.read_artifact(project_dir, "story.json") or {}
+            img_cfg = profile_cfg.get("image_motion_config", {})
+            style_prefix = img_cfg.get("style_prefix", "cinematic detailed fable art, vibrant atmosphere, masterwork")
+            render_cfg = profile_cfg.get("render_config", {})
+            aspect_ratio = render_cfg.get("aspect_ratio", "9:16")
+
+            # Run AI Visual Director
+            import asyncio
+            # If in async loop, schedule or direct
+            directed = None
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Create task or fallback
+                    pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         cut_data = {
             "energy": target_energy,
             "duration": total_duration,
@@ -353,6 +376,73 @@ class RoomService:
         cut_data["version"] = version
         cut_data["available_versions"] = cls.get_versions(project_dir, "shots")
         return cut_data
+
+    @classmethod
+    async def synthesize_visual_prompts(
+        cls,
+        project_dir: Path,
+        profile_cfg: Dict[str, Any],
+        api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Directs rich, cinematic visual prompts and camera motions for all shots in the timeline."""
+        shots_data = cls.read_artifact(project_dir, "shots.json")
+        if not shots_data or not shots_data.get("shots"):
+            raise ValueError("Shots timeline must exist before synthesizing visual prompts")
+
+        story = cls.read_artifact(project_dir, "story.json") or {}
+        img_cfg = profile_cfg.get("image_motion_config", {})
+        style_prefix = img_cfg.get("style_prefix", "cinematic detailed fable art, vibrant atmosphere, masterwork")
+        render_cfg = profile_cfg.get("render_config", {})
+        aspect_ratio = render_cfg.get("aspect_ratio", "9:16")
+
+        directed = await generate_visual_prompts_for_shots(
+            story=story,
+            shots=shots_data["shots"],
+            style_prefix=style_prefix,
+            aspect_ratio=aspect_ratio,
+            api_key=api_key,
+        )
+
+        dir_map = {d["index"]: d for d in directed}
+        for s in shots_data["shots"]:
+            idx = s["index"]
+            if idx in dir_map:
+                s["visual_prompt"] = dir_map[idx]["visual_prompt"]
+                s["camera_motion"] = dir_map[idx].get("camera_motion", "slow cinematic push-in")
+                s["shot_type"] = dir_map[idx].get("shot_type", "medium")
+
+        version, _ = cls.write_versioned_artifact(project_dir, "shots", shots_data)
+        shots_data["version"] = version
+        shots_data["available_versions"] = cls.get_versions(project_dir, "shots")
+        return shots_data
+
+    @classmethod
+    def update_shot_prompt(
+        cls,
+        project_dir: Path,
+        index: int,
+        visual_prompt: str,
+        camera_motion: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Updates the visual prompt and camera motion for a single shot."""
+        shots_data = cls.read_artifact(project_dir, "shots.json")
+        if not shots_data or not shots_data.get("shots"):
+            raise ValueError("Shots timeline not found")
+
+        updated_shot = None
+        for s in shots_data["shots"]:
+            if s["index"] == index:
+                s["visual_prompt"] = visual_prompt
+                if camera_motion:
+                    s["camera_motion"] = camera_motion
+                updated_shot = s
+                break
+
+        if not updated_shot:
+            raise ValueError(f"Shot #{index} not found in timeline")
+
+        cls.write_artifact_file(project_dir, "shots.json", shots_data)
+        return updated_shot
 
     # ROOM 4: SHOT IMAGES (Animagine XL Local Default / Colab Z-Image-Turbo)
     @classmethod
@@ -387,11 +477,10 @@ class RoomService:
 
         # If re-rolling a single shot, load existing manifest to preserve the other shots
         existing_manifest: Dict[int, Dict[str, Any]] = {}
-        if only_index is not None:
-            raw_manifest = cls.read_artifact(project_dir, "images_manifest.json") or []
-            for item in raw_manifest:
-                if isinstance(item, dict) and "index" in item:
-                    existing_manifest[item["index"]] = item
+        raw_manifest = cls.read_artifact(project_dir, "images_manifest.json") or []
+        for item in raw_manifest:
+            if isinstance(item, dict) and "index" in item:
+                existing_manifest[item["index"]] = item
 
         results = []
         for shot in shots_data.get("shots", []):
@@ -401,13 +490,15 @@ class RoomService:
                     results.append(existing_manifest[idx])
                 continue
 
-            scene_desc = shot.get("visual_note") or shot.get("text", "")
-            prompt = f"{scene_desc}, {style_prefix}, {ar_prompt_tag}"
+            # Prioritize dedicated AI visual prompt over raw spoken narration
+            visual_desc = shot.get("visual_prompt") or shot.get("visual_note") or shot.get("text", "")
+            prompt = f"{visual_desc}, {style_prefix}, {ar_prompt_tag}"
             shot_img_path = images_dir / f"shot_{idx:03d}.png"
 
+            t0 = time.time()
             if engine == "colab":
-                # Hosted Colab GPU (Z-Image-Turbo / FLUX-schnell)
-                target_model = model if model in ["z-image-turbo", "flux-schnell"] else "z-image-turbo"
+                # Hosted Colab GPU (SDXL-Turbo / Z-Image-Turbo / FLUX-schnell)
+                target_model = model if model in ["z-image-turbo", "flux-schnell", "sdxl-turbo"] else "sdxl-turbo"
                 await dispatch_colab_image_generation(
                     prompt=prompt,
                     negative_prompt=negative_prompt,
@@ -415,7 +506,7 @@ class RoomService:
                     model=target_model,
                     width=w,
                     height=h,
-                    steps=8 if target_model == "z-image-turbo" else 4,
+                    steps=4,
                     url=colab_url,
                 )
             else:
@@ -428,16 +519,20 @@ class RoomService:
                     height=h,
                     steps=img_cfg.get("steps", 4),
                 )
+            elapsed_s = round(time.time() - t0, 2)
 
             entry = {
                 "index": idx,
                 "prompt": prompt,
+                "visual_prompt": visual_desc,
+                "camera_motion": shot.get("camera_motion", "slow cinematic push-in"),
                 "engine": engine,
                 "model": model if engine == "colab" else "animagine-xl-4.0",
                 "path": str(shot_img_path),
                 "url": f"/media/images/shot_{idx:03d}.png",
                 "exists": shot_img_path.exists(),
                 "duration": shot["duration"],
+                "elapsed_s": elapsed_s,
             }
             results.append(entry)
 

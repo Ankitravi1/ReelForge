@@ -269,6 +269,38 @@ async def reroll_single_image(
             return r
     return results[0] if results else {}
 
+# ROOM 4 AI VISUAL DIRECTOR SYNTHESIS
+@router.post("/images/synthesize-prompts")
+async def synthesize_visual_prompts(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    project, profile_cfg = get_project_and_profile(project_id, db)
+    p_dir = get_project_dir(project.channel_id, project.id)
+    try:
+        updated_shots = await RoomService.synthesize_visual_prompts(p_dir, profile_cfg)
+        return updated_shots
+    except Exception as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+# ROOM 4 SINGLE SHOT PROMPT UPDATE
+@router.post("/images/{index}/prompt")
+async def update_shot_prompt(
+    project_id: str,
+    index: int,
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+):
+    project, _ = get_project_and_profile(project_id, db)
+    p_dir = get_project_dir(project.channel_id, project.id)
+    v_prompt = payload.get("visual_prompt", "").strip()
+    c_motion = payload.get("camera_motion")
+    try:
+        updated = RoomService.update_shot_prompt(p_dir, index, v_prompt, c_motion)
+        return updated
+    except Exception as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
 # ROOM 4 CUSTOM IMAGE UPLOAD
 @router.post("/images/{index}/upload")
 async def upload_shot_image(

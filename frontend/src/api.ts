@@ -233,6 +233,28 @@ export const api = {
     });
     return res.json();
   },
+  async synthesizeVisualPrompts(projectId: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/rooms/images/synthesize-prompts`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to synthesize visual prompts");
+    }
+    return res.json();
+  },
+  async updateShotPrompt(projectId: string, index: number, visualPrompt: string, cameraMotion?: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/projects/${projectId}/rooms/images/${index}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visual_prompt: visualPrompt, camera_motion: cameraMotion }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to update shot prompt");
+    }
+    return res.json();
+  },
   async buildMotion(projectId: string): Promise<any> {
     const res = await fetch(`${API_BASE}/projects/${projectId}/rooms/motion`, { method: "POST" });
     return res.json();

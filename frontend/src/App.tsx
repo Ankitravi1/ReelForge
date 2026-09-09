@@ -35,6 +35,10 @@ import {
   Zap,
   ExternalLink,
   Monitor,
+  ChevronLeft,
+  ChevronRight,
+  X,
+  Eye,
 } from "lucide-react";
 
 export default function App() {
@@ -141,11 +145,32 @@ export default function App() {
   const [showQueueModal, setShowQueueModal] = useState(false);
   const [modalNotice, setModalNotice] = useState<{ title?: string; message: string; type?: "info" | "error" | "success" } | null>(null);
   const [copiedNotice, setCopiedNotice] = useState(false);
+  const [lightboxShotIdx, setLightboxShotIdx] = useState<number | null>(null);
+  const [isDirectingVisuals, setIsDirectingVisuals] = useState(false);
 
   const showAlert = (message: string, type: "info" | "error" | "success" = "info", title?: string) => {
     setCopiedNotice(false);
     setModalNotice({ message, type, title: title || (type === "error" ? "Error" : type === "success" ? "Success" : "Notification") });
   };
+
+  // Keyboard navigation for full-screen Lightbox
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (lightboxShotIdx === null) return;
+      if (e.key === "Escape") {
+        setLightboxShotIdx(null);
+      } else if (e.key === "ArrowLeft" && lightboxShotIdx > 1) {
+        setLightboxShotIdx(lightboxShotIdx - 1);
+      } else if (e.key === "ArrowRight") {
+        const total = artifacts.shots?.shots?.length || artifacts.images?.length || 10;
+        if (lightboxShotIdx < total) {
+          setLightboxShotIdx(lightboxShotIdx + 1);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [lightboxShotIdx, artifacts]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -505,15 +530,45 @@ export default function App() {
     }
   };
 
+  const handleAutoDirectVisuals = async () => {
+    if (!activeProject) return;
+    setIsDirectingVisuals(true);
+    try {
+      await api.synthesizeVisualPrompts(activeProject.id);
+      const updated = await api.getArtifacts(activeProject.id);
+      setArtifacts(updated);
+      showAlert("✨ AI Visual Director synthesized visual scene prompts and camera motion tags for all cuts!", "success", "Visual Direction Complete");
+    } catch (err: any) {
+      showAlert(`Visual direction notice: ${err.message || err}`, "error");
+    } finally {
+      setIsDirectingVisuals(false);
+    }
+  };
+
+  const handleUpdateShotPrompt = async (shotIdx: number, newPrompt: string, cameraMotion?: string) => {
+    if (!activeProject) return;
+    try {
+      await api.updateShotPrompt(activeProject.id, shotIdx, newPrompt, cameraMotion);
+      if (artifacts.shots?.shots) {
+        const newShots = artifacts.shots.shots.map((s: any) =>
+          s.index === shotIdx ? { ...s, visual_prompt: newPrompt, camera_motion: cameraMotion || s.camera_motion } : s
+        );
+        setArtifacts({ ...artifacts, shots: { ...artifacts.shots, shots: newShots } });
+      }
+    } catch (err) {
+      console.error("Failed to update shot prompt:", err);
+    }
+  };
+
   const handleBuildImages = async () => {
     if (!activeProject) return;
     setIsGeneratingImages(true);
-    const engineLabel = imageEngine === "colab" ? "⚡ Colab Z-Image-Turbo" : "💻 Local Animagine XL";
+    const engineLabel = imageEngine === "colab" ? "⚡ Colab SDXL-Turbo" : "💻 Local Animagine XL";
     setJobQueue([{ id: "images", label: `Visual Generation (${engineLabel})`, room: 4, status: "running" }]);
     try {
       await api.buildImages(activeProject.id, {
         engine: imageEngine,
-        model: imageEngine === "colab" ? "z-image-turbo" : "animagine-xl",
+        model: imageEngine === "colab" ? "sdxl-turbo" : "animagine-xl",
         colab_url: colabConfig.url,
       });
       const updated = await api.getArtifacts(activeProject.id);
@@ -533,7 +588,7 @@ export default function App() {
     try {
       await api.rerollImage(activeProject.id, shotIdx, {
         engine: imageEngine,
-        model: imageEngine === "colab" ? "z-image-turbo" : "animagine-xl",
+        model: imageEngine === "colab" ? "sdxl-turbo" : "animagine-xl",
         colab_url: colabConfig.url,
       });
       const updated = await api.getArtifacts(activeProject.id);
@@ -693,6 +748,8 @@ export default function App() {
     ? "Saving Cut Timeline..."
     : isGeneratingImages
     ? "Rendering Shot Visuals..."
+    : isDirectingVisuals
+    ? "AI Visual Director Synthesizing Prompts..."
     : rerollingShotIdx !== null
     ? `Re-rolling Shot #${rerollingShotIdx}...`
     : uploadingShotIdx !== null
@@ -702,6 +759,39 @@ export default function App() {
     : isRenderingVideo
     ? "Rendering Final MP4 Video..."
     : null;
+
+  // 1:1 Cut-to-Shot Alignment between Room 3 and Room 4
+  const cutsList = artifacts.shots?.shots || [];
+  const imagesList = artifacts.images || [];
+
+  const combinedShots = cutsList.length > 0
+    ? cutsList.map((cut: any) => {
+        const img = imagesList.find((i: any) => i.index === cut.index);
+        return {
+          ...cut,
+          image: img,
+          hasImage: !!img?.exists,
+          imageUrl: img ? `${api.getMediaUrl(activeProject?.id || '', "images", `shot_${String(cut.index).padStart(3, "0")}.png`)}?t=${imagesTimestamp}` : null,
+          visual_prompt: cut.visual_prompt || img?.visual_prompt || cut.visual_note || cut.text,
+          camera_motion: cut.camera_motion || img?.camera_motion || "slow cinematic push-in",
+          elapsed_s: img?.elapsed_s,
+          engine: img?.engine,
+        };
+      })
+    : imagesList.map((img: any) => ({
+        index: img.index,
+        duration: img.duration,
+        text: img.prompt,
+        visual_prompt: img.visual_prompt || img.prompt,
+        camera_motion: img.camera_motion || "slow cinematic push-in",
+        image: img,
+        hasImage: !!img.exists,
+        imageUrl: `${api.getMediaUrl(activeProject?.id || '', "images", `shot_${String(img.index).padStart(3, "0")}.png`)}?t=${imagesTimestamp}`,
+        elapsed_s: img.elapsed_s,
+        engine: img.engine,
+      }));
+
+  const activeLightboxShot = combinedShots.find((s: any) => s.index === lightboxShotIdx);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-black text-gray-100 font-sans antialiased select-text overflow-hidden">
@@ -2164,6 +2254,25 @@ export default function App() {
                       </div>
 
                       <button
+                        onClick={handleAutoDirectVisuals}
+                        disabled={isDirectingVisuals || !activeProject}
+                        title="Analyze full story and cuts to synthesize distinct visual scene prompts and camera motion tags"
+                        className="px-3.5 py-2 rounded text-xs font-bold text-amber-200 bg-amber-950/60 hover:bg-amber-900/80 border border-amber-700/60 flex items-center gap-1.5 shadow-lg transition disabled:opacity-50"
+                      >
+                        {isDirectingVisuals ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                            <span>Directing Scene Visuals...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                            <span>✨ Auto-Direct Visuals</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
                         onClick={handleBuildImages}
                         disabled={isGeneratingImages}
                         className={`px-4 py-2 rounded text-xs font-bold text-white flex items-center gap-1.5 shadow-lg transition ${
@@ -2200,7 +2309,7 @@ export default function App() {
                           )}
                         </span>
                         <span className="text-[11px] text-amber-400/70 border-l border-amber-800/60 pl-2 font-mono">
-                          Tongyi-MAI/Z-Image-Turbo · 8-step (~3-4s/img)
+                          stabilityai/sdxl-turbo · 1-step ultra-fast (~2.5s/img)
                         </span>
                       </div>
 
@@ -2254,69 +2363,149 @@ export default function App() {
                   )}
                 </div>
 
-                {/* IMAGES GALLERY */}
-                {artifacts.images?.length > 0 ? (
+                {/* IMAGES GALLERY (1:1 CUT-TO-SHOT MATCHING) */}
+                {combinedShots.length > 0 ? (
                   <div className="space-y-4">
                     <div
-                      className={`grid gap-3 ${
+                      className={`grid gap-4 ${
                         activeProject?.aspect_ratio === "16:9"
                           ? "grid-cols-1 md:grid-cols-2"
-                          : "grid-cols-2 md:grid-cols-3"
+                          : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
                       }`}
                     >
-                      {artifacts.images.map((img: any, imgIdx: number) => (
+                      {combinedShots.map((shot: any) => (
                         <div
-                          key={img.index}
-                          className="bg-gray-950 border border-gray-800 rounded-xl p-3 space-y-2.5 hover:border-gray-700 transition relative flex flex-col justify-between"
+                          key={shot.index}
+                          className="bg-gray-950 border border-gray-800 hover:border-gray-700 rounded-xl p-3.5 space-y-3 transition relative flex flex-col justify-between shadow-lg"
                         >
+                          {/* Top Visual Preview */}
                           <div
-                            className={`w-full bg-gray-900 rounded-lg overflow-hidden border border-gray-800 relative ${
+                            onClick={() => shot.hasImage && setLightboxShotIdx(shot.index)}
+                            className={`w-full bg-gray-900 rounded-lg overflow-hidden border border-gray-800 relative group select-none ${
+                              shot.hasImage ? "cursor-pointer" : ""
+                            } ${
                               activeProject?.aspect_ratio === "16:9" ? "aspect-video" : "aspect-[9/16]"
                             }`}
                           >
-                            {activeProject && (
-                              <img
-                                src={`${api.getMediaUrl(activeProject.id, "images", `shot_${String(img.index).padStart(3, "0")}.png`)}?t=${imagesTimestamp}`}
-                                alt={img.prompt}
-                                className="w-full h-full object-cover bg-gray-900 transition duration-300"
-                              />
-                            )}
-                            <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/80 backdrop-blur font-mono text-[10px] text-blue-300 font-bold border border-blue-900">
-                              Shot #{img.index}
-                            </div>
-                            {img.engine && (
-                              <div className={`absolute bottom-2 left-2 px-1.5 py-0.5 rounded font-mono text-[9px] font-bold border ${
-                                img.engine === "colab"
-                                  ? "bg-amber-950/80 text-amber-300 border-amber-800"
-                                  : "bg-blue-950/80 text-blue-300 border-blue-800"
-                              }`}>
-                                {img.engine === "colab" ? "⚡ Z-Image" : "💻 Animagine"}
+                            {shot.hasImage ? (
+                              <>
+                                <img
+                                  src={shot.imageUrl}
+                                  alt={`Shot #${shot.index}`}
+                                  className="w-full h-full object-cover bg-gray-900 group-hover:scale-[1.02] transition duration-300"
+                                />
+                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-1.5 backdrop-blur-[2px]">
+                                  <Eye className="w-5 h-5 text-white drop-shadow" />
+                                  <span className="text-xs font-bold text-white drop-shadow">View Full Screen</span>
+                                </div>
+                              </>
+                            ) : (
+                              <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-gray-900/50 border border-dashed border-gray-800">
+                                <Film className="w-8 h-8 text-gray-700 mb-2" />
+                                <span className="text-xs font-semibold text-gray-400">Shot #{shot.index} Pending</span>
+                                <span className="text-[10px] text-gray-600 mt-1">Ready to render visual</span>
                               </div>
                             )}
-                            <div className="absolute top-2 right-2 px-2 py-0.5 rounded bg-black/80 backdrop-blur font-mono text-[10px] text-emerald-400 border border-emerald-900">
-                              {img.duration}s
+
+                            {/* Badges Overlay */}
+                            <div className="absolute top-2 left-2 flex items-center gap-1.5 pointer-events-none">
+                              <span className="px-2 py-0.5 rounded bg-black/85 backdrop-blur font-mono text-[10px] text-blue-300 font-bold border border-blue-900/80 shadow">
+                                Shot #{shot.index}
+                              </span>
+                              {shot.elapsed_s && (
+                                <span className="px-1.5 py-0.5 rounded font-mono text-[9px] font-extrabold bg-amber-950/90 text-amber-300 border border-amber-800 shadow">
+                                  ⚡ {shot.elapsed_s.toFixed(1)}s
+                                </span>
+                              )}
                             </div>
+
+                            <div className="absolute top-2 right-2 flex items-center gap-1 pointer-events-none">
+                              <span className="px-2 py-0.5 rounded bg-black/85 backdrop-blur font-mono text-[10px] text-emerald-400 border border-emerald-900/80 shadow">
+                                {shot.duration ? `${shot.duration.toFixed(1)}s` : "3.0s"}
+                              </span>
+                            </div>
+
+                            {/* Bottom Info Badges */}
+                            <div className="absolute bottom-2 left-2 flex items-center gap-1 pointer-events-none">
+                              {shot.engine && (
+                                <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] font-bold border ${
+                                  shot.engine === "colab"
+                                    ? "bg-amber-950/90 text-amber-300 border-amber-800"
+                                    : "bg-blue-950/90 text-blue-300 border-blue-800"
+                                }`}>
+                                  {shot.engine === "colab" ? "⚡ SDXL-Turbo" : "💻 Animagine"}
+                                </span>
+                              )}
+                              {shot.camera_motion && (
+                                <span className="px-1.5 py-0.5 rounded font-mono text-[9px] text-purple-300 bg-purple-950/80 border border-purple-800/70 truncate max-w-[130px]" title={shot.camera_motion}>
+                                  📹 {shot.camera_motion}
+                                </span>
+                              )}
+                            </div>
+
+                            {shot.hasImage && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setLightboxShotIdx(shot.index);
+                                }}
+                                title="Open in Full Screen Viewer"
+                                className="absolute bottom-2 right-2 p-1.5 rounded-lg bg-black/80 hover:bg-black text-gray-300 hover:text-white border border-gray-700/60 shadow transition"
+                              >
+                                <Maximize2 className="w-3 h-3" />
+                              </button>
+                            )}
                           </div>
 
-                          <div className="space-y-2">
-                            <textarea
-                              rows={2}
-                              value={img.prompt || ""}
-                              onChange={(e) => {
-                                const newImages = [...artifacts.images];
-                                newImages[imgIdx] = { ...newImages[imgIdx], prompt: e.target.value };
-                                setArtifacts({ ...artifacts, images: newImages });
-                              }}
-                              className="w-full bg-gray-900 border border-gray-800 rounded-lg p-2 text-[11px] text-gray-300 leading-snug focus:border-blue-500 focus:outline-none"
-                              placeholder="Visual prompt..."
-                            />
-                            <div className="flex items-center justify-between pt-1 border-t border-gray-900">
+                          {/* Story & Prompt Details */}
+                          <div className="space-y-2 flex-1 flex flex-col justify-between">
+                            {/* Spoken Narration (Speech Script) */}
+                            <div className="bg-black/40 border border-gray-800/80 rounded-lg p-2.5 space-y-0.5">
+                              <div className="flex items-center justify-between text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+                                <span>🎙️ Spoken Narration</span>
+                                <span className="text-[9px] font-mono text-gray-600">Cut #{shot.index}</span>
+                              </div>
+                              <p className="text-[11px] text-gray-300 italic line-clamp-2 leading-relaxed" title={shot.text}>
+                                "{shot.text || "No spoken audio"}"
+                              </p>
+                            </div>
+
+                            {/* Editable Visual Prompt */}
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between text-[10px]">
+                                <span className="font-bold text-blue-400 flex items-center gap-1">
+                                  🎨 Visual Scene Prompt
+                                </span>
+                                <span className="text-[9px] text-gray-500 font-mono">Autosaved on edit</span>
+                              </div>
+                              <textarea
+                                rows={2}
+                                value={shot.visual_prompt || ""}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (artifacts.shots?.shots) {
+                                    const newShots = artifacts.shots.shots.map((s: any) =>
+                                      s.index === shot.index ? { ...s, visual_prompt: val } : s
+                                    );
+                                    setArtifacts({ ...artifacts, shots: { ...artifacts.shots, shots: newShots } });
+                                  }
+                                }}
+                                onBlur={(e) => handleUpdateShotPrompt(shot.index, e.target.value, shot.camera_motion)}
+                                className="w-full bg-gray-900 border border-gray-800 hover:border-gray-700 focus:border-blue-500 rounded-lg p-2 text-[11px] text-gray-200 leading-snug focus:outline-none transition"
+                                placeholder="Visual prompt (e.g., A weary cap merchant sleeping under a banyan tree...)"
+                              />
+                            </div>
+
+                            {/* Card Footer Actions */}
+                            <div className="flex items-center justify-between pt-2 border-t border-gray-900">
                               <span className="text-[10px] text-gray-500 font-mono">
-                                {activeProject?.aspect_ratio === "16:9" ? "1024x576" : "576x1024"} · {img.engine === "colab" ? "8-step Colab" : "4-step Local"}
+                                {activeProject?.aspect_ratio === "16:9" ? "1024x576" : "576x1024"}
                               </span>
                               <div className="flex items-center gap-1.5">
                                 <button
-                                  onClick={() => handleUploadImageClick(img.index)}
+                                  type="button"
+                                  onClick={() => handleUploadImageClick(shot.index)}
                                   title="Upload custom image file for this shot"
                                   className="px-2 py-1 rounded bg-gray-900 hover:bg-gray-800 border border-gray-800 text-[10px] text-purple-400 font-medium flex items-center gap-1 transition"
                                 >
@@ -2324,21 +2513,22 @@ export default function App() {
                                   <span>Upload</span>
                                 </button>
                                 <button
-                                  onClick={() => handleRerollImage(img.index)}
-                                  disabled={rerollingShotIdx === img.index}
-                                  title={`Re-roll with active engine: ${imageEngine === "colab" ? "Colab Z-Image-Turbo" : "Local Animagine XL"}`}
+                                  type="button"
+                                  onClick={() => handleRerollImage(shot.index)}
+                                  disabled={rerollingShotIdx === shot.index}
+                                  title={`Generate or re-roll using ${imageEngine === "colab" ? "Colab SDXL-Turbo" : "Local Animagine XL"}`}
                                   className={`px-2 py-1 rounded border text-[10px] font-medium flex items-center gap-1 transition ${
                                     imageEngine === "colab"
                                       ? "bg-amber-950/40 hover:bg-amber-900/50 border-amber-800/60 text-amber-300"
                                       : "bg-gray-900 hover:bg-gray-800 border-gray-800 text-blue-400"
                                   }`}
                                 >
-                                  {rerollingShotIdx === img.index ? (
+                                  {rerollingShotIdx === shot.index ? (
                                     <Loader2 className="w-3 h-3 animate-spin" />
                                   ) : (
                                     <RefreshCw className="w-3 h-3" />
                                   )}
-                                  <span>Re-roll ({imageEngine === "colab" ? "Colab" : "Local"})</span>
+                                  <span>{shot.hasImage ? "Re-roll" : "Generate"} ({imageEngine === "colab" ? "Colab" : "Local"})</span>
                                 </button>
                               </div>
                             </div>
@@ -2365,10 +2555,17 @@ export default function App() {
                   <div className="p-12 border border-dashed border-gray-800 rounded-xl bg-gray-950 text-center space-y-3">
                     <Film className="w-8 h-8 text-gray-600 mx-auto" />
                     <div>
-                      <h4 className="text-sm font-bold text-white">No Shot Images Generated Yet</h4>
+                      <h4 className="text-sm font-bold text-white">No Cuts or Shots Found Yet</h4>
                       <p className="text-xs text-gray-400 mt-1 max-w-md mx-auto">
-                        Click "Generate All Shots" above to render shots using Animagine XL 4.0 Lightning.
+                        Please generate the speech audio and timeline cuts in Room 3 first, then return here to direct and render visuals.
                       </p>
+                      <button
+                        onClick={() => setActiveRoom(3)}
+                        className="mt-3 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-bold text-white transition inline-flex items-center gap-1"
+                      >
+                        <span>Go to Room 3: Cut & Timeline</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 )}
@@ -3566,6 +3763,175 @@ export default function App() {
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Full-Screen Image Lightbox Viewer */}
+      {lightboxShotIdx !== null && activeLightboxShot && (
+        <div 
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-black/95 backdrop-blur-md p-4 animate-in fade-in duration-200"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setLightboxShotIdx(null);
+          }}
+        >
+          {/* Close Button */}
+          <button
+            onClick={() => setLightboxShotIdx(null)}
+            className="absolute top-4 right-4 z-10 p-2.5 rounded-full bg-gray-900/80 hover:bg-gray-800 text-gray-300 hover:text-white border border-gray-700 transition"
+            title="Close viewer (Esc)"
+          >
+            <X className="w-5 h-5" />
+          </button>
+
+          {/* Navigation Arrows */}
+          {lightboxShotIdx > 1 && (
+            <button
+              onClick={() => setLightboxShotIdx(lightboxShotIdx - 1)}
+              className="absolute left-4 top-1/2 -translate-y-1/2 z-10 p-3 rounded-full bg-gray-900/80 hover:bg-gray-800 text-gray-300 hover:text-white border border-gray-700 transition"
+              title="Previous Shot (Left Arrow)"
+            >
+              <ChevronLeft className="w-6 h-6" />
+            </button>
+          )}
+
+          {lightboxShotIdx < combinedShots.length && (
+            <button
+              onClick={() => setLightboxShotIdx(lightboxShotIdx + 1)}
+              className="absolute right-4 top-1/2 -translate-y-1/2 z-10 p-3 rounded-full bg-gray-900/80 hover:bg-gray-800 text-gray-300 hover:text-white border border-gray-700 transition"
+              title="Next Shot (Right Arrow)"
+            >
+              <ChevronRight className="w-6 h-6" />
+            </button>
+          )}
+
+          {/* Content Container */}
+          <div className="max-w-5xl w-full max-h-[92vh] flex flex-col md:flex-row bg-gray-950 border border-gray-800 rounded-2xl overflow-hidden shadow-2xl">
+            {/* Main Visual Display */}
+            <div className="flex-1 bg-black flex items-center justify-center relative min-h-[350px] p-2">
+              {activeLightboxShot.hasImage ? (
+                <img
+                  src={activeLightboxShot.imageUrl || ""}
+                  alt={`Shot #${activeLightboxShot.index}`}
+                  className="max-h-[82vh] max-w-full object-contain rounded-lg shadow-lg"
+                />
+              ) : (
+                <div className="text-center p-8 space-y-2 text-gray-500">
+                  <Film className="w-12 h-12 mx-auto text-gray-600 animate-pulse" />
+                  <p className="text-sm font-semibold">Shot #{activeLightboxShot.index} Not Yet Generated</p>
+                  <button
+                    onClick={() => handleRerollImage(activeLightboxShot.index)}
+                    className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition"
+                  >
+                    Generate Image Now
+                  </button>
+                </div>
+              )}
+
+              {/* Shot Index Pill */}
+              <div className="absolute top-4 left-4 flex items-center gap-2 pointer-events-none">
+                <span className="px-3 py-1 rounded-full bg-blue-600/90 text-white font-mono text-xs font-bold shadow">
+                  Shot #{activeLightboxShot.index} of {combinedShots.length}
+                </span>
+                {activeLightboxShot.elapsed_s && (
+                  <span className="px-2.5 py-1 rounded-full bg-amber-500/90 text-black font-mono text-xs font-extrabold shadow">
+                    ⚡ {activeLightboxShot.elapsed_s.toFixed(1)}s
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Side Details Inspector */}
+            <div className="w-full md:w-80 p-5 bg-gray-950 border-t md:border-t-0 md:border-l border-gray-800 flex flex-col justify-between gap-4 overflow-y-auto">
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    <span>Shot Inspector</span>
+                  </h3>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    Duration: <span className="text-emerald-400 font-mono font-semibold">{activeLightboxShot.duration ? activeLightboxShot.duration.toFixed(1) : "3.0"}s</span> · {activeLightboxShot.engine === "colab" ? "Colab SDXL-Turbo" : "Local Animagine"}
+                  </p>
+                </div>
+
+                {/* Spoken Narration */}
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1">
+                    🎙️ Spoken Narration
+                  </span>
+                  <div className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 text-xs text-gray-300 italic leading-relaxed">
+                    "{activeLightboxShot.text || "No spoken audio"}"
+                  </div>
+                </div>
+
+                {/* Visual Prompt */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 flex items-center gap-1">
+                      🎨 Visual Scene Prompt
+                    </span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(activeLightboxShot.visual_prompt || activeLightboxShot.text);
+                        showAlert("Copied visual prompt to clipboard!", "success");
+                      }}
+                      className="text-[10px] text-gray-400 hover:text-white transition"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <div className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 text-xs text-gray-200 leading-relaxed font-mono select-text">
+                    {activeLightboxShot.visual_prompt || activeLightboxShot.text}
+                  </div>
+                </div>
+
+                {/* Camera Motion */}
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-purple-400 flex items-center gap-1">
+                    📹 Motion & Staging
+                  </span>
+                  <div className="bg-gray-900 border border-gray-800 rounded-lg p-2 text-xs text-purple-200 font-mono">
+                    {activeLightboxShot.camera_motion || "Cinematic push-in"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="space-y-2 pt-3 border-t border-gray-800">
+                <button
+                  onClick={() => handleRerollImage(activeLightboxShot.index)}
+                  disabled={rerollingShotIdx === activeLightboxShot.index}
+                  className="w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition shadow"
+                >
+                  {rerollingShotIdx === activeLightboxShot.index ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  )}
+                  <span>Re-roll Visual ({imageEngine === "colab" ? "Colab GPU" : "Local"})</span>
+                </button>
+
+                {activeLightboxShot.hasImage && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <a
+                      href={activeLightboxShot.imageUrl || "#"}
+                      download={`shot_${String(activeLightboxShot.index).padStart(3, "0")}.png`}
+                      className="py-1.5 rounded-lg bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 hover:text-white text-xs font-semibold flex items-center justify-center gap-1 transition"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>Download</span>
+                    </a>
+                    <button
+                      onClick={() => window.open(activeLightboxShot.imageUrl || "", "_blank")}
+                      className="py-1.5 rounded-lg bg-gray-900 hover:bg-gray-800 border border-gray-700 text-gray-300 hover:text-white text-xs font-semibold flex items-center justify-center gap-1 transition"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>Open Tab</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
