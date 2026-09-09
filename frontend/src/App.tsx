@@ -139,6 +139,14 @@ export default function App() {
   const [selectedTakeId, setSelectedTakeId] = useState<string>("");
   const [jobQueue, setJobQueue] = useState<{ id: string; label: string; room: number; status: "running" | "queued" }[]>([]);
   const [showQueueModal, setShowQueueModal] = useState(false);
+  const [modalNotice, setModalNotice] = useState<{ title?: string; message: string; type?: "info" | "error" | "success" } | null>(null);
+  const [copiedNotice, setCopiedNotice] = useState(false);
+
+  const showAlert = (message: string, type: "info" | "error" | "success" = "info", title?: string) => {
+    setCopiedNotice(false);
+    setModalNotice({ message, type, title: title || (type === "error" ? "Error" : type === "success" ? "Success" : "Notification") });
+  };
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -512,7 +520,7 @@ export default function App() {
       setArtifacts(updated);
       setImagesTimestamp(Date.now());
     } catch (err: any) {
-      alert(`Generation Error: ${err.message || err}`);
+      showAlert(`Generation Error: ${err.message || err}`, "error");
     } finally {
       setIsGeneratingImages(false);
       setJobQueue([]);
@@ -532,7 +540,7 @@ export default function App() {
       setArtifacts(updated);
       setImagesTimestamp(Date.now());
     } catch (err: any) {
-      alert(`Re-roll Error: ${err.message || err}`);
+      showAlert(`Re-roll Error: ${err.message || err}`, "error");
     } finally {
       setRerollingShotIdx(null);
     }
@@ -544,12 +552,12 @@ export default function App() {
       const res = await api.testColab(colabConfig.url, colabConfig.token);
       setColabStatus(res);
       if (res.online) {
-        alert(`Connected to Colab GPU successfully!\nDevice: ${res.gpu_name}\nLatency: ${res.latency_ms}ms`);
+        showAlert(`Connected to Colab GPU successfully!\nDevice: ${res.gpu_name}\nLatency: ${res.latency_ms}ms`, "success", "Colab GPU Connected");
       } else {
-        alert(`Colab GPU unreachable at ${colabConfig.url}.\nError: ${res.error || "Connection timed out"}\nMake sure colab_wan2gp_server.ipynb is running on Google Colab.`);
+        showAlert(`Colab GPU unreachable at ${colabConfig.url}.\n\nDetails: ${res.error || "Connection timed out"}\n\nMake sure Step 3 of colab_wan2gp_server.ipynb is actively running on Google Colab without being interrupted.`, "error", "Colab Connection Failed");
       }
     } catch (err: any) {
-      alert(`Colab test error: ${err.message || err}`);
+      showAlert(`Colab test error: ${err.message || err}`, "error");
     } finally {
       setIsTestingColab(false);
     }
@@ -3557,6 +3565,50 @@ export default function App() {
                 className="px-4 py-1.5 rounded bg-gray-800 hover:bg-gray-700 text-white text-xs font-bold transition"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Copyable Alert & Notification Modal */}
+      {modalNotice && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl max-w-lg w-full p-6 text-slate-100 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h3 className={`text-base font-bold flex items-center gap-2 ${
+                modalNotice.type === 'error' ? 'text-rose-400' :
+                modalNotice.type === 'success' ? 'text-emerald-400' : 'text-cyan-400'
+              }`}>
+                {modalNotice.type === 'error' ? '⚠️' : modalNotice.type === 'success' ? '✅' : 'ℹ️'}
+                {modalNotice.title || 'Notice'}
+              </h3>
+              <button
+                onClick={() => setModalNotice(null)}
+                className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-xs font-mono text-slate-300 leading-relaxed whitespace-pre-wrap select-text cursor-text max-h-72 overflow-y-auto">
+              {modalNotice.message}
+            </div>
+            <div className="flex items-center justify-end gap-2.5 pt-1">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(modalNotice.message);
+                  setCopiedNotice(true);
+                  setTimeout(() => setCopiedNotice(false), 2000);
+                }}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 transition flex items-center gap-1.5"
+              >
+                {copiedNotice ? "✓ Copied!" : "📋 Copy Message"}
+              </button>
+              <button
+                onClick={() => setModalNotice(null)}
+                className="px-5 py-1.5 rounded-lg text-xs font-bold bg-cyan-600 hover:bg-cyan-500 text-white transition shadow-lg shadow-cyan-900/30"
+              >
+                OK
               </button>
             </div>
           </div>
