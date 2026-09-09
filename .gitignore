@@ -1,0 +1,38 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+*.log
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Node & Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+.vite/
+
+# Environment Secrets
+.env
+.env.local
+.env.*.local
+
+# Data & Runtime Media
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Temporary Scratch Files
+scratch/
+*.tmp
+test_depth_out.png
+backend/scratch_test_animagine.png
+
