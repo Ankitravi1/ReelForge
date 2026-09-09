@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# Allow OpenMP runtime duplicate on Windows (PyTorch + OpenVINO)
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 # Base Paths
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

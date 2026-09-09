@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import logging
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .db import engine, Base, SessionLocal
