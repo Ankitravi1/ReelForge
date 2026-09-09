@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, HTTPException
 from ..providers.hardware import detect_hardware
 from ..providers.model_store import (
