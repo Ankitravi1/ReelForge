@@ -62,6 +62,19 @@ _loaded_image_model: str | None = None
 _loaded_video_model: str | None = None
 
 
+@app.on_event("startup")
+def preload_default_model():
+    import threading
+    def _warmup():
+        try:
+            print("[Colab Server] Pre-warming default image model...")
+            load_image_model("sdxl-turbo")
+            print("[Colab Server] Default image model warmed up and ready!")
+        except Exception as e:
+            print(f"[Colab Server] Warm-up notice: {e}")
+    threading.Thread(target=_warmup, daemon=True).start()
+
+
 def check_auth(auth: str | None) -> None:
     if TOKEN and auth != f"Bearer {TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized: invalid or missing auth token")
