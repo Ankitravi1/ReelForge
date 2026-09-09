@@ -83,7 +83,13 @@ def save_colab(data: ColabBridgeConfig):
     return {"status": "saved", "url": data.url}
 
 @router.post("/colab/test", response_model=ColabBridgeStatus)
-async def test_colab(url: str = Body(..., embed=True), token: str = Body(default="", embed=True)):
+async def test_colab(
+    url: Optional[str] = Body(default=None, embed=True),
+    token: str = Body(default="", embed=True),
+):
+    if not url:
+        cfg = get_colab_config()
+        url = cfg.get("url")
     res = await test_colab_connection(url=url, token=token)
     return ColabBridgeStatus(
         online=res.get("online", False),
@@ -91,7 +97,9 @@ async def test_colab(url: str = Body(..., embed=True), token: str = Body(default
         vram_used_gb=res.get("vram_used_gb"),
         vram_total_gb=res.get("vram_total_gb"),
         latency_ms=res.get("latency_ms"),
+        error=res.get("error"),
     )
+
 
 import os
 import shutil

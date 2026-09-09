@@ -126,3 +126,4 @@ class ColabBridgeStatus(BaseModel):
     vram_used_gb: Optional[float] = None
     vram_total_gb: Optional[float] = None
     latency_ms: Optional[int] = None
+    error: Optional[str] = None
