@@ -241,31 +241,58 @@ def health(authorization: str | None = Header(default=None)):
     }
 
 
+@app.get("/logs")
+def get_server_logs():
+    log_file = Path("colab_server.log")
+    if log_file.exists():
+        content = log_file.read_text(encoding="utf-8", errors="ignore")
+        return {"logs": content[-4000:]}
+    return {"logs": "colab_server.log not found"}
+
+
 def draw_image(pipe, spec: dict, item: ImageItem):
+    num_steps = int(item.steps or spec.get("steps", 4))
+    guidance = float(item.guidance if item.guidance is not None else spec.get("guidance", 0.0))
+
     kwargs: dict[str, Any] = {
         "prompt": item.prompt,
-        "width": item.width,
-        "height": item.height,
-        "num_inference_steps": item.steps or spec["steps"],
-        "guidance_scale": item.guidance if item.guidance is not None else spec["guidance"],
+        "num_inference_steps": num_steps,
+        "guidance_scale": guidance,
     }
+    if item.width and item.height:
+        kwargs["width"] = int(item.width // 8 * 8)
+        kwargs["height"] = int(item.height // 8 * 8)
+
     if torch.cuda.is_available():
-        kwargs["generator"] = torch.Generator("cuda").manual_seed(int(item.seed))
-    if item.negative and spec.get("guidance", 0) > 0:
+        kwargs["generator"] = torch.Generator("cuda").manual_seed(int(item.seed or 42))
+
+    if item.negative and guidance > 1.0:
         kwargs["negative_prompt"] = item.negative
-    return pipe(**kwargs).images[0]
+
+    print(f"[Colab Server] Generating with kwargs: {kwargs}")
+    output = pipe(**kwargs)
+    return output.images[0]
 
 
 @app.post("/generate")
 def generate_image(item: ImageItem, authorization: str | None = Header(default=None)):
     check_auth(authorization)
-    target_model = item.model or "z-image-turbo"
-    pipe = load_image_model(target_model)
-    spec = IMAGE_MODELS.get(_loaded_image_model) or IMAGE_MODELS.get("sdxl-turbo") or {"steps": 4, "guidance": 0.0}
-    img = draw_image(pipe, spec, item)
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    return {"image": base64.b64encode(buffer.getvalue()).decode(), "model": _loaded_image_model}
+    try:
+        target_model = item.model or "sdxl-turbo"
+        pipe = load_image_model(target_model)
+        spec = IMAGE_MODELS.get(_loaded_image_model) or IMAGE_MODELS.get("sdxl-turbo") or {"steps": 4, "guidance": 0.0}
+        img = draw_image(pipe, spec, item)
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        return {
+            "image": base64.b64encode(buffer.getvalue()).decode(),
+            "model": _loaded_image_model,
+        }
+    except Exception as exc:
+        import traceback
+        err_msg = traceback.format_exc()
+        print(f"[Colab Server Error] {err_msg}")
+        raise HTTPException(status_code=500, detail=err_msg)
 
 
 @app.post("/batch")
