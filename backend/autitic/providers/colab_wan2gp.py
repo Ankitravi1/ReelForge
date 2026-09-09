@@ -103,10 +103,11 @@ async def dispatch_colab_image_generation(
         "seed": seed,
         "steps": steps,
         "guidance": guidance,
+        "model": model,
     }
 
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with httpx.AsyncClient(timeout=240.0) as client:
             resp = await client.post(f"{target_url}/generate", json=payload, headers=headers)
             if resp.status_code != 200:
                 raise RuntimeError(

@@ -778,18 +778,36 @@ export default function App() {
 
           <button
             onClick={() => setShowColabModal(true)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-orange-950/30 border border-orange-800/60 hover:border-orange-600 transition text-xs"
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition text-xs ${
+              colabStatus.online
+                ? "bg-emerald-950/40 border-emerald-500/60 hover:border-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.15)]"
+                : "bg-gray-900/60 border-gray-800 hover:border-gray-700"
+            }`}
           >
-            <span className={`w-2 h-2 rounded-full ${colabStatus.online ? "bg-orange-500 animate-pulse" : "bg-gray-500"}`} />
+            <span
+              className={`w-2 h-2 rounded-full ${
+                colabStatus.online ? "bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]" : "bg-gray-500"
+              }`}
+            />
             <div className="flex flex-col text-left">
               <div className="flex items-center gap-1.5">
-                <span className="font-semibold text-orange-200">Google Colab Wan2GP</span>
-                <span className="px-1 py-0.2 rounded bg-orange-900/80 text-[10px] text-orange-300 font-mono">
+                <span className={`font-semibold ${colabStatus.online ? "text-emerald-200" : "text-gray-400"}`}>
+                  Google Colab Wan2GP
+                </span>
+                <span
+                  className={`px-1 py-0.2 rounded text-[10px] font-mono font-bold ${
+                    colabStatus.online
+                      ? "bg-emerald-900/80 text-emerald-300 border border-emerald-700/50"
+                      : "bg-gray-800 text-gray-400"
+                  }`}
+                >
                   {colabStatus.online ? "ONLINE" : "OFFLINE"}
                 </span>
               </div>
-              <span className="text-[10px] text-gray-400 font-mono">
-                {colabStatus.online ? `${colabStatus.gpu_name} · ${colabStatus.vram_used_gb}GB` : "Local Engine Active"}
+              <span className={`text-[10px] font-mono ${colabStatus.online ? "text-emerald-300/80" : "text-gray-500"}`}>
+                {colabStatus.online
+                  ? `${colabStatus.gpu_name} · ${colabStatus.vram_total_gb ? colabStatus.vram_total_gb + 'GB' : 'Active'}`
+                  : "Local Engine Active"}
               </span>
             </div>
           </button>

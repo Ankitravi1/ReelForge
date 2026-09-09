@@ -80,21 +80,64 @@ def get_vram_info() -> dict:
     }
 
 
+def get_optimal_dtype():
+    if not torch.cuda.is_available():
+        return torch.float32
+    try:
+        cap = torch.cuda.get_device_capability()
+        if cap[0] >= 8:  # Ampere/Hopper (A100, H100, RTX 3090/4090)
+            return torch.bfloat16
+    except Exception:
+        pass
+    # Tesla T4 and older Turing GPUs MUST use float16
+    return torch.float16
+
+
 def load_image_model(model_id: str):
     global _image_pipe, _loaded_image_model
     if _loaded_image_model == model_id and _image_pipe is not None:
         return _image_pipe
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = get_optimal_dtype()
+    print(f"[Colab Server] Loading model '{model_id}' on {device} ({dtype})...")
+
+    # If z-image-turbo requested, try ZImagePipeline from latest diffusers git
+    if model_id == "z-image-turbo":
+        try:
+            from diffusers import ZImagePipeline
+            _image_pipe = ZImagePipeline.from_pretrained(
+                "Tongyi-MAI/Z-Image-Turbo", torch_dtype=dtype
+            ).to(device)
+            _loaded_image_model = model_id
+            print("[Colab Server] Loaded ZImagePipeline (Tongyi-MAI/Z-Image-Turbo)!")
+            return _image_pipe
+        except Exception as e:
+            print(f"[Colab Server] ZImagePipeline unavailable ({e}), using fast SDXL-Turbo fallback...")
+            model_id = "sdxl-turbo"
+
     from diffusers import AutoPipelineForText2Image
 
-    spec = IMAGE_MODELS.get(model_id) or IMAGE_MODELS["z-image-turbo"]
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    spec = IMAGE_MODELS.get(model_id) or IMAGE_MODELS["sdxl-turbo"]
+    repo_id = spec["repo"]
+    try:
+        _image_pipe = AutoPipelineForText2Image.from_pretrained(
+            repo_id,
+            torch_dtype=dtype,
+            variant="fp16" if dtype == torch.float16 else None,
+        ).to(device)
+    except Exception as e:
+        print(f"[Colab Server] Standard loading for {repo_id}: {e}")
+        _image_pipe = AutoPipelineForText2Image.from_pretrained(
+            repo_id,
+            torch_dtype=dtype,
+        ).to(device)
 
-    _image_pipe = AutoPipelineForText2Image.from_pretrained(
-        spec["repo"], torch_dtype=dtype
-    ).to(device)
+    if torch.cuda.is_available() and hasattr(_image_pipe, "enable_attention_slicing"):
+        _image_pipe.enable_attention_slicing()
+
     _loaded_image_model = model_id
+    print(f"[Colab Server] Successfully loaded {model_id} ({repo_id})!")
     return _image_pipe
 
 
@@ -105,7 +148,7 @@ def load_video_model(model_id: str):
 
     spec = VIDEO_MODELS.get(model_id) or VIDEO_MODELS["wan2.1-t2v-1.3b"]
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    dtype = get_optimal_dtype()
 
     try:
         if spec["type"] == "i2v":
@@ -141,6 +184,7 @@ class ImageItem(BaseModel):
     seed: int = 0
     steps: int | None = None
     guidance: float | None = None
+    model: Optional[str] = None
 
 
 class ImageBatch(BaseModel):
@@ -202,12 +246,13 @@ def draw_image(pipe, spec: dict, item: ImageItem):
 @app.post("/generate")
 def generate_image(item: ImageItem, authorization: str | None = Header(default=None)):
     check_auth(authorization)
-    spec = IMAGE_MODELS.get("z-image-turbo") or IMAGE_MODELS["flux-schnell"]
-    pipe = load_image_model("z-image-turbo")
+    target_model = item.model or "z-image-turbo"
+    pipe = load_image_model(target_model)
+    spec = IMAGE_MODELS.get(_loaded_image_model) or IMAGE_MODELS.get("sdxl-turbo") or {"steps": 4, "guidance": 0.0}
     img = draw_image(pipe, spec, item)
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
-    return {"image": base64.b64encode(buffer.getvalue()).decode()}
+    return {"image": base64.b64encode(buffer.getvalue()).decode(), "model": _loaded_image_model}
 
 
 @app.post("/batch")
